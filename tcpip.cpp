@@ -10,6 +10,7 @@
 // large pages.
 //
 // 2010-05-20 <jc@wippler.nl>
+// 2014-03-24 <eliavg9@gmail.com> added httpPut support
 
 #include "EtherCard.h"
 #include "net.h"
@@ -28,16 +29,17 @@
 
 static uint8_t tcpclient_src_port_l=1;
 static uint8_t tcp_fd; // a file descriptor, will be encoded into the port
-static uint8_t tcp_client_state; //TCP connection state: 1=Send SYN, 2=SYN sent awaiting SYN+ACK, 3=Established, 4=Not used, 5=Closing, 6=Closed
+static uint8_t tcp_client_state;
 static uint8_t tcp_client_port_h;
 static uint8_t tcp_client_port_l;
 static uint8_t (*client_tcp_result_cb)(uint8_t,uint8_t,uint16_t,uint16_t);
 static uint16_t (*client_tcp_datafill_cb)(uint8_t);
-#define TCPCLIENT_SRC_PORT_H 11 //Hardcode all TCP/IP client connection from ports in range 2816-3071
+#define TCPCLIENT_SRC_PORT_H 11
 static uint8_t www_fd;
 static void (*client_browser_cb)(uint8_t,uint16_t,uint16_t);
 static const prog_char *client_additionalheaderline;
 static const char *client_postval;
+static char client_req_type=0; // 0=GET, 1=POST, 2=PUT
 static prog_char *client_urlbuf;
 static const char *client_urlbuf_var;
 static prog_char *client_hoststr;
@@ -49,7 +51,7 @@ static uint8_t waitgwmac; // 0=wait, 1=first req no anser, 2=have gwmac, 4=refes
 #define WGW_HAVE_GW_MAC 2
 #define WGW_REFRESHING 4
 #define WGW_ACCEPT_ARP_REPLY 8
-static uint16_t info_data_len; // length of TCP/IP payload
+static uint16_t info_data_len;
 static uint8_t seqnum = 0xa; // my initial tcp sequence number
 static uint8_t result_fd = 123; // session id of last reply
 static const char* result_ptr;
@@ -110,7 +112,6 @@ static uint8_t eth_type_is_ip_and_my_ip(uint16_t len) {
            (memcmp(gPB + IP_DST_P, EtherCard::myip, 4) == 0  //not my IP
             || (memcmp(gPB + IP_DST_P, EtherCard::broadcastip, 4) == 0) //not subnet broadcast
             || (memcmp(gPB + IP_DST_P, allOnes, 4) == 0)); //not global broadcasts
-    //!@todo Handle multicast
 }
 
 static void fill_ip_hdr_checksum() {
@@ -490,7 +491,7 @@ uint8_t EtherCard::clientTcpReq (uint8_t (*result_cb)(uint8_t,uint8_t,uint16_t,u
 static uint16_t www_client_internal_datafill_cb(uint8_t fd) {
     BufferFiller bfill = EtherCard::tcpOffset();
     if (fd==www_fd) {
-        if (client_postval == 0) {
+        if (client_req_type == 0) {
             bfill.emit_p(PSTR("GET $F$S HTTP/1.0\r\n"
                               "Host: $F\r\n"
                               "$F\r\n"
@@ -498,6 +499,7 @@ static uint16_t www_client_internal_datafill_cb(uint8_t fd) {
                          client_urlbuf_var,
                          client_hoststr, client_additionalheaderline);
         } else {
+        if (client_req_type == 1) {
             const prog_char* ahl = client_additionalheaderline;
             bfill.emit_p(PSTR("POST $F HTTP/1.0\r\n"
                               "Host: $F\r\n"
@@ -512,6 +514,22 @@ static uint16_t www_client_internal_datafill_cb(uint8_t fd) {
                          ahl != 0 ? "\r\n" : "",
                          strlen(client_postval),
                          client_postval);
+          }
+          else  // PUT
+          {
+            const prog_char* ahl = client_additionalheaderline;
+            bfill.emit_p(PSTR("PUT $F HTTP/1.0\r\n"
+                              "Host: $F\r\n"
+                              "$F$S"
+                              "Content-Length: $D\r\n"
+                              "\r\n"
+                              "$S"), client_urlbuf,
+                         client_hoststr,
+                         ahl != 0 ? ahl : PSTR(""),
+                         ahl != 0 ? "\r\n" : "",
+                         strlen(client_postval),
+                         client_postval);
+           }
         }
     }
     return bfill.position();
@@ -536,6 +554,7 @@ void EtherCard::browseUrl (prog_char *urlbuf, const char *urlbuf_varpart, prog_c
     client_urlbuf_var = urlbuf_varpart;
     client_hoststr = hoststr;
     client_additionalheaderline = additionalheaderline;
+    client_req_type = 0; // GET
     client_postval = 0;
     client_browser_cb = callback;
     www_fd = clientTcpReq(&www_client_internal_result_cb,&www_client_internal_datafill_cb,hisport);
@@ -545,6 +564,17 @@ void EtherCard::httpPost (prog_char *urlbuf, prog_char *hoststr, prog_char *addi
     client_urlbuf = urlbuf;
     client_hoststr = hoststr;
     client_additionalheaderline = additionalheaderline;
+    client_req_type = 1; // POST
+    client_postval = postval;
+    client_browser_cb = callback;
+    www_fd = clientTcpReq(&www_client_internal_result_cb,&www_client_internal_datafill_cb,hisport);
+}
+
+void EtherCard::httpPut (prog_char *urlbuf, prog_char *hoststr, prog_char *additionalheaderline,const char *postval,void (*callback)(uint8_t,uint16_t,uint16_t)) {
+    client_urlbuf = urlbuf;
+    client_hoststr = hoststr;
+    client_additionalheaderline = additionalheaderline;
+    client_req_type = 2; // PUT
     client_postval = postval;
     client_browser_cb = callback;
     www_fd = clientTcpReq(&www_client_internal_result_cb,&www_client_internal_datafill_cb,hisport);
@@ -597,24 +627,21 @@ uint8_t EtherCard::packetLoopIcmpCheckReply (const uint8_t *ip_monitoredhost) {
 }
 
 uint16_t EtherCard::accept(const uint16_t port, uint16_t plen) {
-    uint16_t pos;
+    uint16_t len;
+    len = get_tcp_data_len();
 
     if (gPB[TCP_DST_PORT_H_P] == (port >> 8) &&
-            gPB[TCP_DST_PORT_L_P] == ((uint8_t) port))
-    {   //Packet targetted at specified port
+            gPB[TCP_DST_PORT_L_P] == ((uint8_t) port)) {
         if (gPB[TCP_FLAGS_P] & TCP_FLAGS_SYN_V)
-            make_tcp_synack_from_syn(); //send SYN+ACK
-        else if (gPB[TCP_FLAGS_P] & TCP_FLAGS_ACK_V)
-        {   //This is an acknowledgement to our SYN+ACK so let's start processing that payload
+            make_tcp_synack_from_syn();
+        else if (gPB[TCP_FLAGS_P] & TCP_FLAGS_ACK_V) {
             info_data_len = get_tcp_data_len();
-            if (info_data_len > 0)
-            {   //Got some data
-                pos = TCP_DATA_START; // TCP_DATA_START is a formula
-                if (pos <= plen - 8)
-                    return pos;
-            }
-            else if (gPB[TCP_FLAGS_P] & TCP_FLAGS_FIN_V)
-                make_tcp_ack_from_any(0,0); //No data so close connection
+            if (info_data_len > 0) {
+                len = TCP_DATA_START; // TCP_DATA_START is a formula
+                if (len <= plen - 8)
+                    return len;
+            } else if (gPB[TCP_FLAGS_P] & TCP_FLAGS_FIN_V)
+                make_tcp_ack_from_any(0,0);
         }
     }
     return 0;
@@ -628,12 +655,10 @@ uint16_t EtherCard::packetLoop (uint16_t plen) {
     }
 
     if (plen==0) {
-        //Check every 65536 (no-packet) cycles whether we need to retry ARP request for gateway
         if ((waitgwmac & WGW_INITIAL_ARP || waitgwmac & WGW_REFRESHING) &&
                 delaycnt==0 && isLinkUp())
             client_arp_whohas(gwip);
         delaycnt++;
-        //Send TCP syn to gateway if required
         if (tcp_client_state==1 && (waitgwmac & WGW_HAVE_GW_MAC)) { // send a syn
             tcp_client_state = 2;
             tcpclient_src_port_l++; // allocate a new port
@@ -641,50 +666,44 @@ uint16_t EtherCard::packetLoop (uint16_t plen) {
         }
         return 0;
     }
+    if ((gPB[30]==239)&&(gPB[31]==255)&&(gPB[32]==255)&&(gPB[33]==250)) { //multicast packets
+        return UDP_DATA_P; //mark as udp structured packet
+    }
 
-    if (eth_type_is_arp_and_my_ip(plen))
-    {   //Service ARP request
+    if (eth_type_is_arp_and_my_ip(plen)) {
         if (gPB[ETH_ARP_OPCODE_L_P]==ETH_ARP_OPCODE_REQ_L_V)
             make_arp_answer_from_request();
         if (waitgwmac & WGW_ACCEPT_ARP_REPLY && (gPB[ETH_ARP_OPCODE_L_P]==ETH_ARP_OPCODE_REPLY_L_V) && client_store_gw_mac())
             waitgwmac = WGW_HAVE_GW_MAC;
         return 0;
     }
-    if (eth_type_is_ip_and_my_ip(plen)==0)
-    {   //Not IP so ignoring
-        //!@todo Add other protocols (and make each optional at compile time)
+    if (eth_type_is_ip_and_my_ip(plen)==0) {
         return 0;
     }
-    if (gPB[IP_PROTO_P]==IP_PROTO_ICMP_V && gPB[ICMP_TYPE_P]==ICMP_TYPE_ECHOREQUEST_V)
-    {   //Service ICMP echo request (ping)
+    if (gPB[IP_PROTO_P]==IP_PROTO_ICMP_V && gPB[ICMP_TYPE_P]==ICMP_TYPE_ECHOREQUEST_V) {
         if (icmp_cb)
             (*icmp_cb)(&(gPB[IP_SRC_P]));
         make_echo_reply_from_request(plen);
         return 0;
     }
-    if (ether.udpServerListening() && gPB[IP_PROTO_P]==IP_PROTO_UDP_V)
-    {   //Call UDP server handler (callback) if one is defined for this packet
+    if (ether.udpServerListening() && gPB[IP_PROTO_P]==IP_PROTO_UDP_V) {
         if(ether.udpServerHasProcessedPacket(plen))
-            return 0; //An UDP server handler (callback) has processed this packet
+            return 0;
     }
     if (plen<54 && gPB[IP_PROTO_P]!=IP_PROTO_TCP_V )
-        return 0; //Packet flagged as TCP but shorter than minimum TCP packet length
-    if (gPB[TCP_DST_PORT_H_P]==TCPCLIENT_SRC_PORT_H)
-    {   //Source port is in range reserved (by EtherCard) for client TCP/IP connections
+        return 0;
+    if ( gPB[TCP_DST_PORT_H_P]==TCPCLIENT_SRC_PORT_H) {
         if (check_ip_message_is_from(hisip)==0)
-            return 0; //Not current TCP/IP connection (only handle one at a time)
-        if (gPB[TCP_FLAGS_P] & TCP_FLAGS_RST_V)
-        {   //TCP reset flagged
+            return 0;
+        if (gPB[TCP_FLAGS_P] & TCP_FLAGS_RST_V) {
             if (client_tcp_result_cb)
                 (*client_tcp_result_cb)((gPB[TCP_DST_PORT_L_P]>>5)&0x7,3,0,0);
             tcp_client_state = 5;
             return 0;
         }
         len = get_tcp_data_len();
-        if (tcp_client_state==2)
-        {   //Waiting for SYN-ACK
-            if ((gPB[TCP_FLAGS_P] & TCP_FLAGS_SYN_V) && (gPB[TCP_FLAGS_P] &TCP_FLAGS_ACK_V))
-            {   //SYN and ACK flags set so this is an acknowledgement to our SYN
+        if (tcp_client_state==2) {
+            if ((gPB[TCP_FLAGS_P] & TCP_FLAGS_SYN_V) && (gPB[TCP_FLAGS_P] &TCP_FLAGS_ACK_V)) {
                 make_tcp_ack_from_any(0,0);
                 gPB[TCP_FLAGS_P] = TCP_FLAGS_ACK_V|TCP_FLAGS_PUSH_V;
                 if (client_tcp_datafill_cb)
@@ -693,9 +712,7 @@ uint16_t EtherCard::packetLoop (uint16_t plen) {
                     len = 0;
                 tcp_client_state = 3;
                 make_tcp_ack_with_data_noflags(len);
-            }
-            else
-            {   //Expecting SYN+ACK so reset and resend SYN
+            }else{
                 tcp_client_state = 1; // retry
                 len++;
                 if (gPB[TCP_FLAGS_P] & TCP_FLAGS_ACK_V)
@@ -704,8 +721,7 @@ uint16_t EtherCard::packetLoop (uint16_t plen) {
             }
             return 0;
         }
-        if (tcp_client_state==3 && len>0)
-        {   //TCP connection established so read data
+        if (tcp_client_state==3 && len>0) {
             if (client_tcp_result_cb) {
                 uint16_t tcpstart = TCP_DATA_START; // TCP_DATA_START is a formula
                 if (tcpstart>plen-8)
@@ -713,22 +729,19 @@ uint16_t EtherCard::packetLoop (uint16_t plen) {
                 uint16_t save_len = len;
                 if (tcpstart+len>plen)
                     save_len = plen-tcpstart;
-                (*client_tcp_result_cb)((gPB[TCP_DST_PORT_L_P]>>5)&0x7,0,tcpstart,save_len); //Call TCP handler (callback) function
+                (*client_tcp_result_cb)((gPB[TCP_DST_PORT_L_P]>>5)&0x7,0,tcpstart,save_len);
 
-                if(persist_tcp_connection)
-                {   //Keep connection alive by sending ACK
+                if(persist_tcp_connection){
                     make_tcp_ack_from_any(len,TCP_FLAGS_PUSH_V);
                 }
-                else
-                {   //Close connection
+                else{
                     make_tcp_ack_from_any(len,TCP_FLAGS_PUSH_V|TCP_FLAGS_FIN_V);
                     tcp_client_state = 6;
                 }
                 return 0;
             }
         }
-        if (tcp_client_state != 5)
-        {   //
+        if (tcp_client_state != 5) {
             if (gPB[TCP_FLAGS_P] & TCP_FLAGS_FIN_V) {
                 if(tcp_client_state == 3) {
                     return 0; // In some instances FIN is received *before* DATA.  If that is the case, we just return here and keep looking for the data packet
@@ -742,7 +755,6 @@ uint16_t EtherCard::packetLoop (uint16_t plen) {
         return 0;
     }
 
-    //If we are here then this is a TCP/IP packet targetted at us and not related to out client connection so accept
     return accept(hisport, plen);
 }
 
