@@ -123,59 +123,24 @@ public:
     friend void dumpStash (const char* msg, void* ptr);   // optional
 };
 
-/** This class populates network send / recieve buffers.
-*   Provides print type access to buffer
-*/
+/** This class populates network send / recieve buffers. */
 class BufferFiller : public Print {
-    uint8_t *start; //!< Pointer to start of buffer
-    uint8_t *ptr; //!< Pointer to cursor position
+    uint8_t *start, *ptr;
 public:
-    /** @brief  Empty constructor
-    */
     BufferFiller () {}
-
-    /** @brief  Constructor
-    *   @param  buf Pointer to the ethernet data buffer
-    */
     BufferFiller (uint8_t* buf) : start (buf), ptr (buf) {}
 
-    /** @brief  Add formatted text to buffer
-    *   @param  fmt Format string
-    *   @param  ... parameters for format string
-    */
     void emit_p (PGM_P fmt, ...);
-
-    /** @brief  Add data to buffer from character buffer
-    *   @param  s Pointer to data
-    *   @param  n Number of characters to copy
-    */
     void emit_raw (const char* s, uint16_t n) { memcpy(ptr, s, n); ptr += n; }
-
-    /** @brief  Add data to buffer from program space string
-    *   @param  p Program space string pointer
-    *   @param  n Number of characters to copy
-    */
     void emit_raw_p (PGM_P p, uint16_t n) { memcpy_P(ptr, p, n); ptr += n; }
 
-    /** @brief  Get pointer to start of buffer
-    *   @return <i>uint8_t*</i> Pointer to start of buffer
-    */
     uint8_t* buffer () const { return start; }
-
-    /** @brief  Get cursor position
-    *   @return <i>uint16_t</i> Cursor postion
-    */
     uint16_t position () const { return ptr - start; }
 
-    /** @brief  Write one byte to buffer
-    *   @param  v Byte to add to buffer
-    */
     virtual WRITE_RESULT write (uint8_t v) { *ptr++ = v; WRITE_RETURN }
 };
 
-/** This class provides the main interface to a ENC28J60 based network interface card and is the class most users will use.
-*   @note   All TCP/IP client (outgoing) connections are made from source port in range 2816-3071. Do not use these source ports for other purposes.
-*/
+/** This class provides the main interface to a ENC28J60 based network interface card and is the class most users will use. */
 class EtherCard : public Ethernet {
 public:
     static uint8_t mymac[6];  ///< MAC address
@@ -188,7 +153,7 @@ public:
     static uint8_t hisip[4];  ///< DNS lookup result
     static uint16_t hisport;  ///< TCP port to connect to (default 80)
     static bool using_dhcp;   ///< True if using DHCP
-    static bool persist_tcp_connection; ///< False to break connections on first packet received
+    static bool persist_tcp_connection; ///< True to break connections on first packet received
 
     // EtherCard.cpp
     /**   @brief  Initialise the network interface
@@ -227,32 +192,28 @@ public:
 
     /**   @brief  Parse recieved data
     *     @param  plen Size of data to parse (e.g. return value of packetRecieve()).
-    *     @return <i>uint16_t</i> Offset of TCP payload data in data buffer or zero if packet processed
+    *     @return <i>uint16_t</i> Position of TCP data in data buffer
     *     @note   Data buffer is shared by recieve and transmit functions
-    *     @note   Only handles ARP and IP
     */
     static uint16_t packetLoop (uint16_t plen);
 
-    /**   @brief  Accept a TCP/IP connection
-    *     @param  port IP port to accept on - do nothing if wrong port
-    *     @param  plen Number of bytes in packet
-    *     @return <i>uint16_t</i> Offset within packet of TCP payload. Zero for no data.
+    /**   @brief
+    *     @todo   Document accept
     */
     static uint16_t accept (uint16_t port, uint16_t plen);
 
-    /**   @brief  Send a respons to a HTTP request
-    *     @param  dlen Size of the HTTP (TCP) payload
+    /**   @brief
+    *     @todo   Document httpServerReply
     */
     static void httpServerReply (uint16_t dlen);
 
-    /**   @brief  Send a response to a HTTP request
-    *     @param  dlen Size of the HTTP (TCP) payload
-    *     @param  flags TCP flags
+    /**   @brief
+    *     @todo   Document httpServerReply_with_flags
     */
     static void httpServerReply_with_flags (uint16_t dlen , uint8_t flags);
 
-    /**   @brief  Aknowledge TCP message
-    *     @todo   Is this / should this be private?
+    /**   @brief
+    *     @todo   Document httpServerReplyAck
     */
     static void httpServerReplyAck ();
 
@@ -298,9 +259,15 @@ public:
                           prog_char *additionalheaderline, const char *postval,
                           void (*callback)(uint8_t,uint16_t,uint16_t));
 
-    /**   @brief  Send NTP request
-    *     @param  ntpip IP address of NTP server
-    *     @param  srcport IP port to send from
+	/**   @brief
+    *     @todo   Document httpPut
+    */
+    static void httpPut (prog_char *urlbuf, prog_char *hoststr,
+                          prog_char *additionalheaderline, const char *postval,
+                          void (*callback)(uint8_t,uint16_t,uint16_t));
+
+    /**   @brief
+    *     @todo   Document ntpRequest
     */
     static void ntpRequest (uint8_t *ntpip,uint8_t srcport);
 
@@ -332,7 +299,6 @@ public:
     */
     static void sendUdp (const char *data, uint8_t len, uint16_t sport,
                          const uint8_t *dip, uint16_t dport);
-
     /**   @brief  Resister the function to handle ping events
     *     @param  cb Pointer to function
     */
@@ -343,7 +309,7 @@ public:
     */
     static void clientIcmpRequest (const uint8_t *destip);
 
-    /**   @brief  Check for ping response
+    /**   @brief  Check if for response
     *     @param  ip_monitoredhost Pointer to 4 byte IP address of host to check
     *     @return <i>uint8_t</i> True (1) if ping response from specified host
     */
@@ -355,17 +321,18 @@ public:
     static void sendWol (uint8_t *wolmac);
 
     // new stash-based API
-    /**   @brief  Send TCP request
+    /**   @brief
+    *     @todo Document tcpSend
     */
     static uint8_t tcpSend ();
 
-    /**   @brief  Get TCP reply
-    *     @return <i>char*</i> Pointer to TCP reply payload. NULL if no data.
+    /**   @brief
+    *     @todo Document tcpReply
     */
     static const char* tcpReply (uint8_t fd);
 
-    /**   @brief  Configure TCP connections to be persistent or not
-    *     @param  persist True to maintain TCP connection. False to finish TCP connection after first packet.
+    /**   @brief
+    *     @todo Document persistTcpConnection
     */
     static void persistTcpConnection(bool persist);
 
